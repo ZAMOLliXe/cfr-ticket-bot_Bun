@@ -1,24 +1,30 @@
 name: Verifica locuri CFR
 
 on:
+  workflow_dispatch:
   schedule:
-    # ruleaza la fiecare 15 minute
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+    # reporneste jobul la fiecare 5 ore; in interiorul unei rulari,
+    # scriptul verifica singur la fiecare 30 de secunde (vezi check_tickets.py)
+    - cron: '0 */5 * * *'
+
+concurrency:
+  group: cfr-bot
+  cancel-in-progress: false
 
 jobs:
   check:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - name: Checkout cod
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Configureaza Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Instaleaza dependinte
+      - name: Instaleaza dependente
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
@@ -32,6 +38,8 @@ jobs:
           TRAVEL_DATE: "03.07.2026"
           TRAIN_NUMBER: "553"
           TARGET_CLASS: "clasa a 2-a"
+          CHECK_INTERVAL_SECONDS: "30"
+          MAX_RUNTIME_SECONDS: "21000"
         run: python check_tickets.py
 
       - name: Salveaza screenshot de debug
@@ -39,5 +47,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshot
-          path: debug_screenshot.png
-          retention-days: 3
+          path: |
+            debug_screenshot.png
+            debug_panel.html
+          if-no-files-found: ignore
