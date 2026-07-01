@@ -5,11 +5,10 @@ Flux confirmat pe baza paginilor reale trimise de utilizator:
   1. Navigheaza direct la URL-ul de cautare (fara reCAPTCHA, GET simplu):
      https://bilete.cfrcalatori.ro/ro-RO/Rute-trenuri/{DEP}/{ARR}?DepartureDate=...
   2. Gaseste cardul <li id="li-itinerary-N"> care contine numarul trenului cautat.
-  3. Click pe butonul "Cumpara" (#button-itinerary-N-buy) - deschide panoul.
-  4. Click pe butonul "Continua" (#button-buy-itinerary-N-tickets-0) - submit,
-     navigheaza la pasul 2 (Clase si oferte).
-  5. Click pe "Verifica trenurile selectate" (#button-available-places).
-  6. Citeste continutul modalului (#div-step-2-available-places-result) si cauta
+  3. Click pe butonul "Cumpara" (#button-itinerary-N-buy) - navigheaza direct
+     la pasul 2 ("Clase si oferte"), fara panou/buton intermediar.
+  4. Click pe "Verifica trenurile selectate" (#button-available-places).
+  5. Citeste continutul modalului (#div-step-2-available-places-result) si cauta
      un rand "X locuri disponibile la clasa a 2-a".
 
 Config prin variabile de mediu (setate ca GitHub Secrets / workflow env):
@@ -110,20 +109,13 @@ def run():
 
         try:
             page.click(f"#button-itinerary-{idx}-buy", timeout=10000)
-            # asteapta ca panoul de cumparare sa se deschida efectiv,
-            # nu doar un timp fix (mai robust decat wait_for_timeout)
-            page.wait_for_selector(
-                f"[id^='button-buy-itinerary-{idx}-tickets-']",
-                state="visible",
-                timeout=15000,
-            )
-
-            # foloseste un locator flexibil, in caz ca sufixul nu e mereu "-0"
-            continua_btn = page.locator(
-                f"[id^='button-buy-itinerary-{idx}-tickets-']"
-            ).first
-            continua_btn.click(timeout=10000)
+            # click-ul pe "Cumpara" navigheaza direct la pasul 2
+            # ("Clase si oferte") - nu mai exista un panou intermediar
+            # cu buton separat "Continua".
             page.wait_for_load_state("networkidle", timeout=30000)
+            page.wait_for_selector(
+                "#button-available-places", state="visible", timeout=15000
+            )
         except Exception as e:
             page.screenshot(path="debug_screenshot.png", full_page=True)
             try:
