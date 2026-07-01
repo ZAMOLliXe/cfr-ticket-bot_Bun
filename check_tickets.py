@@ -109,10 +109,16 @@ def run():
             return
 
         try:
-            page.click(f"#button-itinerary-{idx}-buy", timeout=10000)
-            page.wait_for_timeout(1000)
+            buy_button = page.locator(f"#button-itinerary-{idx}-buy")
+            buy_button.scroll_into_view_if_needed(timeout=10000)
+            buy_button.click(timeout=10000)
+            page.wait_for_timeout(1500)
             page.click(f"#button-buy-itinerary-{idx}-tickets-0", timeout=10000)
-            page.wait_for_load_state("networkidle", timeout=30000)
+            # nu folosim networkidle - multe site-uri nu ajung niciodata la
+            # stare de retea complet inactiva (analytics, chat widgets etc.)
+            # asteptam in schimb aparitia elementului specific pasului 2
+            page.wait_for_selector("#button-available-places", timeout=45000)
+            accept_cookies(page)
         except Exception as e:
             page.screenshot(path="debug_screenshot.png", full_page=True)
             print("Eroare la selectarea trenului / avansarea la pasul 2:", e)
