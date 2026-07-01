@@ -109,18 +109,29 @@ def run():
             return
 
         try:
-            buy_button = page.locator(f"#button-itinerary-{idx}-buy")
-            buy_button.scroll_into_view_if_needed(timeout=10000)
-            buy_button.click(timeout=10000)
-            page.wait_for_timeout(1500)
-            page.click(f"#button-buy-itinerary-{idx}-tickets-0", timeout=10000)
-            # nu folosim networkidle - multe site-uri nu ajung niciodata la
-            # stare de retea complet inactiva (analytics, chat widgets etc.)
-            # asteptam in schimb aparitia elementului specific pasului 2
-            page.wait_for_selector("#button-available-places", timeout=45000)
-            accept_cookies(page)
+            page.click(f"#button-itinerary-{idx}-buy", timeout=10000)
+            # asteapta ca panoul de cumparare sa se deschida efectiv,
+            # nu doar un timp fix (mai robust decat wait_for_timeout)
+            page.wait_for_selector(
+                f"[id^='button-buy-itinerary-{idx}-tickets-']",
+                state="visible",
+                timeout=15000,
+            )
+
+            # foloseste un locator flexibil, in caz ca sufixul nu e mereu "-0"
+            continua_btn = page.locator(
+                f"[id^='button-buy-itinerary-{idx}-tickets-']"
+            ).first
+            continua_btn.click(timeout=10000)
+            page.wait_for_load_state("networkidle", timeout=30000)
         except Exception as e:
             page.screenshot(path="debug_screenshot.png", full_page=True)
+            try:
+                with open("debug_panel.html", "w", encoding="utf-8") as f:
+                    f.write(page.content())
+                print("Am salvat debug_panel.html cu tot HTML-ul paginii la momentul erorii.")
+            except Exception as e2:
+                print("Nu am putut salva debug_panel.html:", e2)
             print("Eroare la selectarea trenului / avansarea la pasul 2:", e)
             send_telegram(
                 f"⚠️ Botul CFR a intampinat o eroare la selectarea trenului "
