@@ -11,18 +11,26 @@ Flux confirmat pe baza paginilor reale trimise de utilizator:
   5. Citeste continutul modalului (#div-step-2-available-places-result) si cauta
      un rand "X locuri disponibile la clasa a 2-a".
 
+GitHub Actions nu poate rula un "schedule" mai des de 1 data pe minut, deci
+verificarea la 30 de secunde se face intr-o bucla in interiorul unei singure
+rulari de job, timp de cateva ore; workflow-ul reporneste jobul periodic
+(prin cron, ex. la fiecare 5 ore) ca sa acopere continuu tot intervalul.
+
 Config prin variabile de mediu (setate ca GitHub Secrets / workflow env):
   TELEGRAM_BOT_TOKEN
   TELEGRAM_CHAT_ID
-  DEPARTURE_SLUG   (ex: "Bucuresti-(toate-statiile)")
-  ARRIVAL_SLUG     (ex: "Suceava-(toate-statiile)")
-  TRAVEL_DATE      (format DD.MM.YYYY, ex: "03.07.2026")
-  TRAIN_NUMBER     (ex: "553")
-  TARGET_CLASS     (text de cautat in lista de locuri, ex: "clasa a 2-a")
+  DEPARTURE_SLUG          (ex: "Bucuresti-(toate-statiile)")
+  ARRIVAL_SLUG            (ex: "Suceava-(toate-statiile)")
+  TRAVEL_DATE             (format DD.MM.YYYY, ex: "03.07.2026")
+  TRAIN_NUMBER            (ex: "553")
+  TARGET_CLASS            (text de cautat in lista de locuri, ex: "clasa a 2-a")
+  CHECK_INTERVAL_SECONDS  (implicit 30)
+  MAX_RUNTIME_SECONDS     (implicit 21000 = 5h50m, sub limita de 6h a runnerelor gratuite)
 """
 
 import os
 import re
+import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -31,6 +39,9 @@ ARRIVAL_SLUG = os.environ.get("ARRIVAL_SLUG", "Suceava-(toate-statiile)")
 TRAVEL_DATE = os.environ.get("TRAVEL_DATE", "03.07.2026")
 TRAIN_NUMBER = os.environ.get("TRAIN_NUMBER", "553")
 TARGET_CLASS = os.environ.get("TARGET_CLASS", "clasa a 2-a")
+
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "30"))
+MAX_RUNTIME_SECONDS = int(os.environ.get("MAX_RUNTIME_SECONDS", "21000"))
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -85,11 +96,13 @@ def find_itinerary_index(page, train_number: str):
     return None
 
 
-def run():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-
+def check_once(browser) -> str:
+    """
+    Face o singura verificare completa (pagina noua, de la zero).
+    Intoarce unul din: "found", "not_found", "train_missing", "error".
+    """
+    page = browser.new_page()
+    try:
         print("Deschid:", SEARCH_URL)
         page.goto(SEARCH_URL, timeout=60000)
         accept_cookies(page)
@@ -100,12 +113,7 @@ def run():
         if idx is None:
             page.screenshot(path="debug_screenshot.png", full_page=True)
             print(f"Nu am gasit trenul {TRAIN_NUMBER} in rezultatele cautarii.")
-            send_telegram(
-                f"⚠️ Botul CFR nu a gasit trenul {TRAIN_NUMBER} in rezultate "
-                f"pentru {TRAVEL_DATE}. Verifica manual: {SEARCH_URL}"
-            )
-            browser.close()
-            return
+            return "train_missing"
 
         try:
             page.click(f"#button-itinerary-{idx}-buy", timeout=10000)
@@ -121,20 +129,13 @@ def run():
             try:
                 with open("debug_panel.html", "w", encoding="utf-8") as f:
                     f.write(page.content())
-                print("Am salvat debug_panel.html cu tot HTML-ul paginii la momentul erorii.")
             except Exception as e2:
                 print("Nu am putut salva debug_panel.html:", e2)
             print("Eroare la selectarea trenului / avansarea la pasul 2:", e)
-            send_telegram(
-                f"⚠️ Botul CFR a intampinat o eroare la selectarea trenului "
-                f"{TRAIN_NUMBER}. Verifica manual: {SEARCH_URL}"
-            )
-            browser.close()
-            return
+            return "error"
 
         try:
             page.click("#button-available-places", timeout=10000)
-            # asteapta sa dispara indicatorul de loading din modal
             page.wait_for_selector(
                 "#div-loading-step-2-available-places.not-displayed",
                 timeout=20000,
@@ -143,12 +144,7 @@ def run():
         except Exception as e:
             page.screenshot(path="debug_screenshot.png", full_page=True)
             print("Eroare la verificarea locurilor disponibile:", e)
-            send_telegram(
-                f"⚠️ Botul CFR nu a putut verifica locurile pentru trenul "
-                f"{TRAIN_NUMBER}. Verifica manual: {SEARCH_URL}"
-            )
-            browser.close()
-            return
+            return "error"
 
         result_text = page.locator("#div-step-2-available-places-result").inner_text()
         page.screenshot(path="debug_screenshot.png", full_page=True)
@@ -159,7 +155,6 @@ def run():
         target_found = TARGET_CLASS.lower() in result_text.lower()
 
         if target_found:
-            # incearca sa extraga numarul de locuri de langa textul clasei cautate
             seats_match = re.search(
                 rf"(\d+)\s+locuri disponibile\s+(?:la|pentru)?\s*{re.escape(TARGET_CLASS)}",
                 result_text,
@@ -172,10 +167,61 @@ def run():
                 f"Cumpara rapid: {SEARCH_URL}"
             )
             print(f"GASIT: {TARGET_CLASS} are locuri disponibile ({seats_info}).")
+            return "found"
         else:
             print(f"Inca nu sunt locuri la {TARGET_CLASS}.")
+            return "not_found"
+    finally:
+        page.close()
+
+
+def run():
+    start_time = time.time()
+    already_notified = False
+    consecutive_errors = 0
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+
+        while time.time() - start_time < MAX_RUNTIME_SECONDS:
+            iteration_start = time.time()
+            try:
+                status = check_once(browser)
+            except Exception as e:
+                print("Eroare neasteptata in check_once:", e)
+                status = "error"
+
+            if status == "found":
+                # notifica o singura data cat timp raman locuri; daca
+                # dispar si reapar, se trimite din nou o notificare noua
+                already_notified = True
+                consecutive_errors = 0
+            elif status == "not_found":
+                already_notified = False
+                consecutive_errors = 0
+            elif status == "train_missing":
+                consecutive_errors = 0
+                send_telegram(
+                    f"⚠️ Botul CFR nu a gasit trenul {TRAIN_NUMBER} in rezultate "
+                    f"pentru {TRAVEL_DATE}. Verifica manual: {SEARCH_URL}"
+                )
+            elif status == "error":
+                consecutive_errors += 1
+                # nu trimite alerta la fiecare eroare (ar spama la 30s),
+                # doar daca esueaza repetat
+                if consecutive_errors in (3, 10):
+                    send_telegram(
+                        f"⚠️ Botul CFR intampina erori repetate la verificarea "
+                        f"trenului {TRAIN_NUMBER}. Verifica manual: {SEARCH_URL}"
+                    )
+
+            elapsed = time.time() - iteration_start
+            sleep_for = max(0, CHECK_INTERVAL_SECONDS - elapsed)
+            time.sleep(sleep_for)
 
         browser.close()
+
+    print("Am atins limita de timp per job, ma opresc (workflow-ul va reporni jobul).")
 
 
 if __name__ == "__main__":
