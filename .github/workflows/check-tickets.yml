@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 355
     steps:
       - name: Checkout cod
